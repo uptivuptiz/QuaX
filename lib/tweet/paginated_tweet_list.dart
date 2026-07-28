@@ -57,6 +57,13 @@ class TweetFeedController {
     }
   }
 
+  /// Seeds the controller with pre-loaded items, bypassing the fetch callback.
+  /// Used when items are loaded externally (e.g. batched initial load) and then
+  /// handed off to the paginated list so infinite-scroll can continue from here.
+  void seed(List<TweetChain> items, String? nextCursor) {
+    _paging.replaceFirstPage(items, nextCursor);
+  }
+
   void dispose() => _paging.dispose();
 }
 
@@ -75,6 +82,7 @@ class PaginatedTweetList extends StatefulWidget {
   final String firstPageErrorPrefix;
   final String newPageErrorPrefix;
   final String emptyMessage;
+  final ScrollController? scrollController;
   // Cached tweets shown in place of the first-page spinner while the initial
   // load is in flight, so a feed reveals its cached content instead of a
   // full-screen progress indicator.
@@ -90,6 +98,7 @@ class PaginatedTweetList extends StatefulWidget {
     required this.emptyMessage,
     this.onRefresh,
     this.firstPagePreview,
+    this.scrollController,
   });
 
   @override
@@ -236,6 +245,7 @@ class _PaginatedTweetListState extends State<PaginatedTweetList> {
     final list = PagingListener<int, TweetChain>(
       controller: _controller,
       builder: (context, state, fetchNextPage) => PagedListView<int, TweetChain>(
+        scrollController: widget.scrollController,
         padding: EdgeInsets.only(top: 4, bottom: MediaQuery.of(context).padding.bottom),
         state: state,
         fetchNextPage: fetchNextPage,

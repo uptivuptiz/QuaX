@@ -10,6 +10,7 @@ import 'package:quax/generated/l10n.dart';
 import 'package:quax/group/feed_cache.dart';
 import 'package:quax/group/feed_session_cache.dart';
 import 'package:quax/group/group_screen.dart';
+import 'package:quax/tweet/conversation.dart';
 import 'package:quax/tweet/paginated_tweet_list.dart';
 import 'package:quax/tweet/tweet_context_scope.dart';
 import 'package:quax/utils/iterables.dart';
@@ -52,9 +53,11 @@ class _SubscriptionGroupFeedState extends State<SubscriptionGroupFeed> {
   FeedSessionCache? _cache;
   ScrollController? _innerScrollController;
   bool _scrollRestoreScheduled = false;
-  // Cached tweets shown while the first page loads, so opening the feed reveals
-  // its previously-loaded content instead of a full-screen spinner.
-  List<TweetChain>? _cachedPreview;
+  // Batched initial-load state.
+  bool _isDoingInitialLoad = false;
+  bool _initialLoadCancelled = false;
+  List<TweetChain>? _batchedChains;
+  final ScrollController _scrollController = ScrollController();
 
   bool get _usesCache => widget.cacheKey != null;
 
@@ -67,19 +70,11 @@ class _SubscriptionGroupFeedState extends State<SubscriptionGroupFeed> {
     } else {
       _feedController = TweetFeedController();
     }
-    // Cached (pop/push-restored) controllers already hold their tweets; only a
-    // fresh controller needs the preview while it loads the first page.
-    _cachedPreview = widget.initialPreview;
-    if (!_feedController.hasItems) {
-      _loadPreview();
+    // Batched initial load: feeds chunks in small batches with a delay so
+    // results appear incrementally instead of firing all 63+ API calls at once.
+    if (!_usesCache && !_feedController.hasItems && widget.chunks.isNotEmpty) {
+      _loadInitialBatches();
     }
-  }
-
-  Future<void> _loadPreview() async {
-    var repository = await Repository.readOnly();
-    var cached = await readCachedChainsForHashes(repository, widget.chunks.map((e) => e.hash));
-    if (!mounted) return;
-    setState(() => _cachedPreview = cached);
   }
 
   @override
@@ -128,6 +123,9 @@ class _SubscriptionGroupFeedState extends State<SubscriptionGroupFeed> {
 
   @override
   void dispose() {
+    _initialLoadCancelled = true;
+    _isDoingInitialLoad = false;
+    _scrollController.dispose();
     if (!_usesCache) {
       _feedController.dispose();
     }
@@ -207,6 +205,72 @@ class _SubscriptionGroupFeedState extends State<SubscriptionGroupFeed> {
         });
   }
 
+  /// Loads all chunks in batches of 3 with a 5-second delay between batches.
+  /// After each batch the results are shown immediately via setState, so the
+  /// user sees posts appearing as they load. Once every chunk has been fetched
+  /// the paging controller is seeded with all results so "load older" works.
+  Future<void> _loadInitialBatches() async {
+    _isDoingInitialLoad = true;
+
+    var repository = await Repository.writable();
+    var cursorId = await createCursor(repository);
+    var allChains = <TweetChain>[];
+    bool shouldShowUnrelatedPostsInFeedWarning = false;
+
+    const batchSize = 3;
+    const delay = Duration(seconds: 5);
+
+    for (var i = 0; i < widget.chunks.length; i += batchSize) {
+      if (_initialLoadCancelled) return;
+
+      var batchEnd = (i + batchSize < widget.chunks.length)
+          ? i + batchSize
+          : widget.chunks.length;
+      var batchFutures = <Future<(List<TweetChain>, bool)>>[];
+
+      for (var j = i; j < batchEnd; j++) {
+        batchFutures
+            .add(_processChunk(widget.chunks[j], null, repository, cursorId));
+      }
+
+      try {
+        var batchResult = await Future.wait(batchFutures);
+        for (var (chains, hasUnrelated) in batchResult) {
+          allChains.addAll(chains);
+          shouldShowUnrelatedPostsInFeedWarning |= hasUnrelated;
+        }
+      } catch (e) {
+        debugPrint('Initial batch $i failed: $e');
+      }
+
+      if (_initialLoadCancelled) return;
+
+      setState(() => _batchedChains = List.of(allChains));
+
+      // Wait before the next batch (skip after the last one).
+      if (i + batchSize < widget.chunks.length) {
+        await Future.delayed(delay);
+      }
+    }
+
+    if (_initialLoadCancelled) return;
+    if (!mounted) return;
+
+    // Unrelated-posts warning (only once, after all batches).
+    if (shouldShowUnrelatedPostsInFeedWarning &&
+        !PrefService.of(context)
+            .get(optionDisableWarningsForUnrelatedPostsInFeed)) {
+      await showUnrelatedPostsInFeedWarning();
+      if (_initialLoadCancelled) return;
+    }
+
+    // Seed the paging controller so normal pagination can continue from here.
+    _feedController.seed(allChains, cursorId.toString());
+
+    _isDoingInitialLoad = false;
+    if (mounted) setState(() {});
+  }
+
   String _buildSearchQuery(List<Subscription> users) {
     var query = '';
 
@@ -253,73 +317,33 @@ class _SubscriptionGroupFeedState extends State<SubscriptionGroupFeed> {
   /// set. We store this along with the top and bottom pagination cursors, which we use to perform pagination for all
   /// sets at the same time, allowing us to create a feed made up of individual search queries.
   Future<TweetPageResult> _listTweets(String? cursorKey) async {
-    List<Future<List<TweetChain>>> futures = [];
-
     var repository = await Repository.writable();
     var nextCursor = await createCursor(repository);
+
+    const batchSize = 3;
+    var allChains = <TweetChain>[];
     bool shouldShowUnrelatedPostsInFeedWarning = false;
 
-    for (var chunk in widget.chunks) {
-      var hash = chunk.hash;
+    for (var i = 0; i < widget.chunks.length; i += batchSize) {
+      var batchEnd = (i + batchSize < widget.chunks.length) ? i + batchSize : widget.chunks.length;
+      var batchFutures = <Future<(List<TweetChain>, bool)>>[];
 
-      futures.add(Future(() async {
-        var tweets = <TweetChain>[];
+      for (var j = i; j < batchEnd; j++) {
+        batchFutures.add(_processChunk(widget.chunks[j], cursorKey, repository, nextCursor));
+      }
 
-        String? searchCursor;
-
-        if (cursorKey == null) {
-          // We're loading the initial content for the feed screen, so load all the chunks we already have
-          var storedChunks = await repository.query(tableFeedGroupChunk,
-              where: 'hash = ?', whereArgs: [hash], orderBy: 'created_at DESC');
-
-          // Make sure we load any existing stored tweets from the chunk
-          tweets.addAll(chainsFromStoredChunks(storedChunks));
-
-          // Use the latest chunk's top cursor to load any new tweets since the last time we checked
-          var latestChunk = storedChunks.firstOrNull;
-          if (latestChunk != null) {
-            searchCursor = latestChunk['cursor_top'] as String;
-          } else {
-            // Otherwise we need to perform a fresh load from scratch for this chunk
-            searchCursor = null;
-          }
-        } else {
-          // We're currently at the end of our current feed, so load the oldest chunk and use its cursor to load more
-          var storedChunks = await repository.query(tableFeedGroupChunk,
-              where: 'cursor_id = ? AND hash = ?', whereArgs: [int.parse(cursorKey), hash]);
-          if (storedChunks.isNotEmpty) {
-            searchCursor = storedChunks.first['cursor_bottom'] as String;
-          } else {
-            searchCursor = null;
-          }
+      try {
+        var batchResult = await Future.wait(batchFutures);
+        for (var (chains, hasUnrelated) in batchResult) {
+          allChains.addAll(chains);
+          shouldShowUnrelatedPostsInFeedWarning |= hasUnrelated;
         }
-
-        // Perform our search for the next page of results for this chunk, and add those tweets to our collection
-        var query = _buildSearchQuery(chunk.users);
-        TweetStatus result =
-            await Twitter.searchTweets(query, widget.includeReplies, cursor: searchCursor);
-        shouldShowUnrelatedPostsInFeedWarning |= feedContainsUnrelatedTweets(result, chunk.users);
-
-        if (result.chains.isNotEmpty) {
-          tweets.addAll(result.chains);
-
-          // Make sure we insert the set of cursors for this latest chunk, ready for the next time we paginate
-          await repository.insert(tableFeedGroupChunk, {
-            'cursor_id': int.parse(nextCursor),
-            'hash': hash,
-            'cursor_top': result.cursorTop,
-            'cursor_bottom': result.cursorBottom,
-            'response': jsonEncode(result.chains.map((e) => e.toJson()).toList())
-          });
-        }
-
-        return tweets;
-      }));
+      } catch (e) {
+        debugPrint('Batch $i failed: $e');
+      }
     }
 
-    // Wait for all our searches to complete, then build our list of tweet conversations
-    var result = (await Future.wait(futures));
-    var threads = sortChainsNewestFirst(result.expand((element) => element).toList());
+    var threads = sortChainsNewestFirst(allChains);
 
     if (!mounted) {
       return (chains: <TweetChain>[], nextCursor: null);
@@ -333,12 +357,86 @@ class _SubscriptionGroupFeedState extends State<SubscriptionGroupFeed> {
     return (chains: threads, nextCursor: nextCursor);
   }
 
+  Future<(List<TweetChain> chains, bool hasUnrelated)> _processChunk(
+    SubscriptionGroupFeedChunk chunk,
+    String? cursorKey,
+    Database repository,
+    String nextCursor,
+  ) async {
+    var tweets = <TweetChain>[];
+    var hash = chunk.hash;
+
+    String? searchCursor;
+
+    if (cursorKey == null) {
+      var storedChunks = await repository.query(tableFeedGroupChunk,
+          where: 'hash = ?', whereArgs: [hash], orderBy: 'created_at DESC');
+
+      tweets.addAll(chainsFromStoredChunks(storedChunks));
+
+      var latestChunk = storedChunks.firstOrNull;
+      if (latestChunk != null) {
+        searchCursor = latestChunk['cursor_top'] as String;
+      }
+    } else {
+      var storedChunks = await repository.query(tableFeedGroupChunk,
+          where: 'cursor_id = ? AND hash = ?', whereArgs: [int.parse(cursorKey), hash]);
+      if (storedChunks.isNotEmpty) {
+        searchCursor = storedChunks.first['cursor_bottom'] as String;
+      }
+    }
+
+    var query = _buildSearchQuery(chunk.users);
+    var result = await Twitter.searchTweets(query, widget.includeReplies, cursor: searchCursor);
+
+    bool hasUnrelated = feedContainsUnrelatedTweets(result, chunk.users);
+
+    if (result.chains.isNotEmpty) {
+      tweets.addAll(result.chains);
+      await repository.insert(tableFeedGroupChunk, {
+        'cursor_id': int.parse(nextCursor),
+        'hash': hash,
+        'cursor_top': result.cursorTop,
+        'cursor_bottom': result.cursorBottom,
+        'response': jsonEncode(result.chains.map((e) => e.toJson()).toList()),
+      });
+    }
+
+    return (tweets, hasUnrelated);
+  }
+
   @override
   Widget build(BuildContext context) {
     if (widget.chunks.isEmpty) {
       return Scaffold(
         body: Center(
           child: Text(L10n.of(context).this_group_contains_no_subscriptions),
+        ),
+      );
+    }
+
+    // During the batched initial load show a plain interactive list so the user
+    // can scroll and tap posts while the remaining batches arrive. Once the
+    // paging controller has been seeded we switch to the normal paginated list.
+    if (_isDoingInitialLoad && !_feedController.hasItems) {
+      return Scaffold(
+        body: TweetContextScope(
+          child: _batchedChains != null
+              ? ListView.builder(
+                  controller: _scrollController,
+                  padding: const EdgeInsets.only(top: 4),
+                  itemCount: _batchedChains!.length,
+                  itemBuilder: (context, index) {
+                    var chain = _batchedChains![index];
+                    return TweetConversation(
+                      id: chain.id,
+                      tweets: chain.tweets,
+                      username: null,
+                      isPinned: chain.isPinned,
+                    );
+                  },
+                )
+              : const Center(child: CircularProgressIndicator()),
         ),
       );
     }
@@ -350,8 +448,9 @@ class _SubscriptionGroupFeedState extends State<SubscriptionGroupFeed> {
           child: PaginatedTweetList(
             feed: _feedController,
             loadPage: _listTweets,
+            scrollController: _scrollController,
             username: null,
-            firstPagePreview: _cachedPreview,
+            firstPagePreview: null,
             onRefresh: () async {
               var repository = await Repository.writable();
               await repository.delete(tableFeedGroupChunk);
