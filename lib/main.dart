@@ -8,7 +8,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_portal/flutter_portal.dart';
-import 'package:media_kit/media_kit.dart';
 import 'package:quax/client/accounts.dart';
 import 'package:quax/client/login_webview.dart';
 
@@ -38,6 +37,7 @@ import 'package:quax/status.dart';
 import 'package:quax/subscriptions/users_model.dart';
 import 'package:quax/trends/trends_model.dart';
 import 'package:quax/tweet/_video.dart';
+import 'package:quax/ui/discord_popup.dart';
 import 'package:quax/ui/errors.dart';
 import 'package:logging/logging.dart';
 import 'package:pref/pref.dart';
@@ -211,8 +211,6 @@ Future<void> main() async {
 
   WidgetsFlutterBinding.ensureInitialized();
 
-  MediaKit.ensureInitialized();
-
   setTimeagoLocales();
 
   final prefService = await PrefServiceShared.init(prefix: 'pref_', defaults: {
@@ -240,6 +238,7 @@ Future<void> main() async {
     optionNonConfirmationBiasMode: false,
     optionShouldCheckForUpdates: true,
     optionOpenLinksInEmbeddedBrowser: false,
+    optionDiscordPopupDismissed: false,
     optionSubscriptionGroupsOrderByAscending: true,
     optionDisableWarningsForUnrelatedPostsInFeed: false,
     alwaysShowFullTweetContents: false,
@@ -307,7 +306,7 @@ Future<void> main() async {
           providers: [
             Provider(create: (context) => groupsModel),
             Provider(create: (context) => feedSessionCache),
-            Provider(create: (context) => VideoControllerPool(maxSize: 5)),
+            Provider(create: (context) => VideoControllerPool(maxSize: 2)),
             Provider(create: (context) => homeModel),
             ChangeNotifierProvider(create: (context) => importDataModel),
             Provider(create: (context) => subscriptionsModel),
@@ -346,6 +345,7 @@ class _FritterAppState extends State<FritterApp> {
   bool _checkUpdates = false;
   bool _updateDialogShown = false;
   bool _accountDialogShown = false;
+  bool _discordDialogShown = false;
   bool _isSecure = false;
   double _textScaleFactor = 1.0;
   Locale? _locale;
@@ -543,6 +543,13 @@ class _FritterAppState extends State<FritterApp> {
                             WidgetsBinding.instance.addPostFrameCallback((_) {
                               _accountDialogShown = true;
                               checkForAccounts(_navigatorKey.currentContext!);
+                            });
+                          }
+
+                          if (!_discordDialogShown) {
+                            WidgetsBinding.instance.addPostFrameCallback((_) {
+                              _discordDialogShown = true;
+                              checkForDiscord(_navigatorKey.currentContext!);
                             });
                           }
 
