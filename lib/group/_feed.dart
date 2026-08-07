@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'package:quax/client/client.dart';
@@ -218,7 +219,8 @@ class _SubscriptionGroupFeedState extends State<SubscriptionGroupFeed> {
     bool shouldShowUnrelatedPostsInFeedWarning = false;
 
     const batchSize = 3;
-    const delay = Duration(seconds: 5);
+    final totalBatches = (widget.chunks.length + batchSize - 1) ~/ batchSize;
+    const delay = Duration(milliseconds: 1000);
 
     for (var i = 0; i < widget.chunks.length; i += batchSize) {
       if (_initialLoadCancelled) return;
@@ -227,6 +229,11 @@ class _SubscriptionGroupFeedState extends State<SubscriptionGroupFeed> {
           ? i + batchSize
           : widget.chunks.length;
       var batchFutures = <Future<(List<TweetChain>, bool)>>[];
+
+      final batchNumber = (i ~/ batchSize) + 1;
+      if (kDebugMode) {
+        debugPrint('[DEBUG] Firing batch $batchNumber/$totalBatches');
+      }
 
       for (var j = i; j < batchEnd; j++) {
         batchFutures
@@ -255,6 +262,10 @@ class _SubscriptionGroupFeedState extends State<SubscriptionGroupFeed> {
 
     if (_initialLoadCancelled) return;
     if (!mounted) return;
+
+    if (kDebugMode) {
+      debugPrint('[DEBUG] Done fetching all posts');
+    }
 
     // Unrelated-posts warning (only once, after all batches).
     if (shouldShowUnrelatedPostsInFeedWarning &&
@@ -324,9 +335,15 @@ class _SubscriptionGroupFeedState extends State<SubscriptionGroupFeed> {
     var allChains = <TweetChain>[];
     bool shouldShowUnrelatedPostsInFeedWarning = false;
 
+    final totalBatches = (widget.chunks.length + batchSize - 1) ~/ batchSize;
     for (var i = 0; i < widget.chunks.length; i += batchSize) {
       var batchEnd = (i + batchSize < widget.chunks.length) ? i + batchSize : widget.chunks.length;
       var batchFutures = <Future<(List<TweetChain>, bool)>>[];
+
+      final batchNumber = (i ~/ batchSize) + 1;
+      if (kDebugMode) {
+        debugPrint('[DEBUG] Firing batch $batchNumber/$totalBatches');
+      }
 
       for (var j = i; j < batchEnd; j++) {
         batchFutures.add(_processChunk(widget.chunks[j], cursorKey, repository, nextCursor));
