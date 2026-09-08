@@ -151,6 +151,34 @@ void main() {
     }
   });
 
+  group('parseSearchTimeline', () {
+    Map<String, dynamic> envelope(Map<String, dynamic> searchTimeline) => {
+          'data': {
+            'search_by_raw_query': {'search_timeline': searchTimeline}
+          }
+        };
+
+    // Long queries (roughly 512 characters and up) come back with a
+    // search_timeline that carries no timeline at all. The double subscript
+    // used to throw NoSuchMethodError there, crashing search and every group
+    // and Following feed, all of which go through searchTweets.
+    test('Should return an empty status when search_timeline holds a null timeline', () {
+      final status = Twitter.parseSearchTimeline(envelope({'timeline': null}));
+
+      expect(status.chains, isEmpty,
+          reason: 'A timeline-less response should degrade to an empty result, not crash the search screen');
+      expect(status.cursorBottom, isNull,
+          reason: 'There is no page to follow when the timeline is missing, so no bottom cursor should be invented');
+    });
+
+    test('Should return an empty status when search_timeline has no timeline key', () {
+      final status = Twitter.parseSearchTimeline(envelope(const {}));
+
+      expect(status.chains, isEmpty,
+          reason: 'An absent timeline key should read the same as a null one, rather than throwing');
+    });
+  });
+
   for (final operation in ['Following', 'Followers']) {
     group(operation, () {
       for (final fixture in fixturesOf(operation)) {
