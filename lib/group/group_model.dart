@@ -131,7 +131,10 @@ class GroupsModel extends Store<List<SubscriptionGroup>> {
     });
   }
 
-  Future reloadGroups() async {
+  /// Reloads the groups. Every feed shell is told to rebuild, apart from the one registered under
+  /// [skipFeedKey], so a change made from inside a feed can update the stores without remounting
+  /// the feed being read.
+  Future reloadGroups({String? skipFeedKey}) async {
     log.info('Listing subscriptions groups');
 
     await execute(() async {
@@ -144,8 +147,10 @@ class GroupsModel extends Store<List<SubscriptionGroup>> {
 
       return (await database.rawQuery(query)).map((e) => SubscriptionGroup.fromMap(e)).toList(growable: false);
     });
-    for (final callback in _onGroupsReloaded.values) {
-      callback();
+    for (final entry in _onGroupsReloaded.entries) {
+      if (entry.key != skipFeedKey) {
+        entry.value();
+      }
     }
   }
 
@@ -166,7 +171,7 @@ class GroupsModel extends Store<List<SubscriptionGroup>> {
         .toList(growable: false);
   }
 
-  Future saveUserGroupMembership(String user, List<String> memberships) async {
+  Future saveUserGroupMembership(String user, List<String> memberships, {String? skipFeedKey}) async {
     var database = await Repository.writable();
 
     var batch = database.batch();
@@ -180,7 +185,7 @@ class GroupsModel extends Store<List<SubscriptionGroup>> {
     }
 
     await batch.commit();
-    await reloadGroups();
+    await reloadGroups(skipFeedKey: skipFeedKey);
   }
 
   Future<SubscriptionGroupEdit> loadGroupEdit(String? id) async {

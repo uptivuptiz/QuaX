@@ -29,7 +29,7 @@ class GroupFeedShell extends StatefulWidget {
 
 class _GroupFeedShellState extends State<GroupFeedShell> with AutomaticKeepAliveClientMixin<GroupFeedShell> {
   late final GroupModel _groupModel;
-  final FeedRefreshController _feedRefreshController = FeedRefreshController();
+  late final FeedRefreshController _feedRefreshController = FeedRefreshController(_callbackKey);
   int _refreshCounter = 0;
   // Cached refs captured in didChangeDependencies — accessing the InheritedWidget
   // tree via context.read in dispose() triggers a framework warning, since

@@ -674,11 +674,16 @@ class TweetTileState extends State<TweetTile> with SingleTickerProviderStateMixi
       createdAt = tweet.createdAt;
     }
 
+    final showSubscribeBadge =
+        !hideAuthorInformation && tweet.user?.idStr != null && prefs.get(optionShowNotFollowedIndicator);
+
     final avatar = hideAuthorInformation
         ? const Icon(Icons.account_circle, size: 48)
-        : ClipRRect(
-            borderRadius: BorderRadius.circular(64),
-            child: UserAvatar(uri: tweet.user!.profileImageUrlHttps),
+        : UserAvatar(
+            uri: tweet.user!.profileImageUrlHttps,
+            badge: showSubscribeBadge
+                ? SubscribeAvatarBadge(user: tweet.user!, cardColor: tweetCardColor(context))
+                : null,
           );
 
     void onTapProfile() {

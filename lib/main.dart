@@ -246,6 +246,7 @@ Future<void> main() async {
     optionMediaAllowBackgroundPlayOtherApps: false,
     optionMediaVideoPrefetchSeconds: 0,
     optionNonConfirmationBiasMode: false,
+    optionShowNotFollowedIndicator: true,
     optionShouldCheckForUpdates: true,
     optionOpenLinksInEmbeddedBrowser: false,
     optionDiscordPopupDismissed: false,

@@ -79,6 +79,7 @@ const optionLikedFirstToastShown = 'saved.liked_first_toast_shown';
 const optionUserTrendsLocations = 'trends.locations';
 
 const optionNonConfirmationBiasMode = 'other.improve_non_confirmation_bias';
+const optionShowNotFollowedIndicator = 'tweets.show_not_followed_indicator';
 
 
 final Map<String, String> userAgentHeader = {

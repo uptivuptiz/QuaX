@@ -7,8 +7,10 @@ import 'package:flutter_triple/flutter_triple.dart';
 import 'package:quax/constants.dart';
 import 'package:quax/database/entities.dart';
 import 'package:quax/generated/l10n.dart';
+import 'package:quax/group/feed_refresh_controller.dart';
 import 'package:quax/group/group_model.dart';
 import 'package:quax/profile/profile.dart';
+import 'package:quax/subscriptions/subscription_lookup.dart';
 import 'package:quax/subscriptions/users_model.dart';
 import 'package:multi_select_flutter/multi_select_flutter.dart';
 import 'package:provider/provider.dart';
@@ -61,13 +63,25 @@ class UserAvatar extends StatelessWidget {
   final String? uri;
   final double size;
 
-  const UserAvatar({super.key, required this.uri, this.size = 48});
+  /// Overlaid on the bottom-right corner of the avatar, outside the clip so it is not rounded away.
+  final Widget? badge;
+
+  const UserAvatar({super.key, required this.uri, this.size = 48, this.badge});
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
+    var avatar = ClipRRect(
       borderRadius: BorderRadius.circular(size),
       child: _createUserAvatar(uri, size),
+    );
+
+    var badge = this.badge;
+    if (badge == null) {
+      return avatar;
+    }
+
+    return Stack(
+      children: [avatar, Positioned(bottom: 0, right: 0, child: badge)],
     );
   }
 }
@@ -102,9 +116,14 @@ class FollowButtonSelectGroupDialog extends StatefulWidget {
   final Subscription user;
   final bool followed;
   final List<String> groupsForUser;
+  final String? skipFeedKey;
 
   const FollowButtonSelectGroupDialog(
-      {super.key, required this.user, required this.followed, required this.groupsForUser});
+      {super.key,
+      required this.user,
+      required this.followed,
+      required this.groupsForUser,
+      this.skipFeedKey});
 
   @override
   State<FollowButtonSelectGroupDialog> createState() => _FollowButtonSelectGroupDialogState();
@@ -134,11 +153,11 @@ class _FollowButtonSelectGroupDialogState extends State<FollowButtonSelectGroupD
       onConfirm: (List<String> memberships) async {
         // If we're not currently following the user, follow them first
         if (widget.followed == false) {
-          await subscriptionsModel.toggleSubscribe(widget.user, widget.followed);
+          await subscriptionsModel.toggleSubscribe(widget.user, widget.followed, skipFeedKey: widget.skipFeedKey);
         }
 
         // Then add them to all the selected groups
-        await groupModel.saveUserGroupMembership(widget.user.id, memberships);
+        await groupModel.saveUserGroupMembership(widget.user.id, memberships, skipFeedKey: widget.skipFeedKey);
       },
     );
   }
@@ -148,7 +167,14 @@ class FollowButton extends StatelessWidget {
   final Subscription user;
   final Color? color;
 
-  const FollowButton({super.key, required this.user, this.color});
+  /// Replaces the default icon button with an arbitrary tappable widget.
+  final Widget? child;
+
+  /// The feed shell left mounted when this change reloads the feeds. Set by the in-feed badge, so
+  /// subscribing does not remount the feed the user is reading.
+  final String? skipFeedKey;
+
+  const FollowButton({super.key, required this.user, this.color, this.child, this.skipFeedKey});
 
   @override
   Widget build(BuildContext context) {
@@ -158,51 +184,113 @@ class FollowButton extends StatelessWidget {
       store: model,
       onState: (_, state) {
         var followed = state.any((element) => element.id == user.id);
-        var inFeed = followed ? state.any((element) => element.id == user.id && element.inFeed) : false;
+        var inFeed = followed && state.any((element) => element.id == user.id && element.inFeed);
 
-        var icon = followed
-            ? (inFeed ? Icon(Icons.person_remove, color: color) : Icon(Icons.visibility_off))
-            : Icon(Icons.person_add, color: color);
-        var text = followed ? L10n.of(context).unsubscribe : L10n.of(context).subscribe;
-
-        return PopupMenuButton<String>(
-          icon: icon,
-          itemBuilder: (context) => [
-            PopupMenuItem(value: 'toggle_subscribe', child: Text(text)),
-            PopupMenuItem(
-              value: 'add_to_group',
-              child: Text(L10n.of(context).add_to_group),
-            ),
-            if (followed)
-              PopupMenuItem(
-                value: 'toggle_in_main_feed',
-                child: Text(inFeed ? L10n.of(context).hide_from_main_feed : L10n.of(context).show_in_main_feed),
-              ),
-          ],
-          onSelected: (value) async {
-            switch (value) {
-              case 'add_to_group':
-                var groups = await context.read<GroupsModel>().listGroupsForUser(user.id);
-                if (context.mounted) {
-                  showDialog(
-                      context: context,
-                      builder: (_) => FollowButtonSelectGroupDialog(
-                            user: user,
-                            followed: followed,
-                            groupsForUser: groups,
-                          ));
-                }
-                break;
-              case 'toggle_subscribe':
-                await model.toggleSubscribe(user, followed);
-                break;
-              case 'toggle_in_main_feed':
-                await model.toggleInFeed(user, inFeed);
-                break;
-            }
-          },
+        // Why: a MenuAnchor menu has no modal barrier, so scrolling the feed dismisses it
+        // instead of being swallowed by the menu.
+        return MenuAnchor(
+          menuChildren: _buildMenuItems(context, model, followed, inFeed),
+          builder: (context, controller, _) => _buildAnchor(controller, followed, inFeed),
         );
       },
+    );
+  }
+
+  List<Widget> _buildMenuItems(BuildContext context, SubscriptionsModel model, bool followed, bool inFeed) {
+    return [
+      MenuItemButton(
+        onPressed: () => model.toggleSubscribe(user, followed, skipFeedKey: skipFeedKey),
+        child: Text(followed ? L10n.of(context).unsubscribe : L10n.of(context).subscribe),
+      ),
+      MenuItemButton(
+        onPressed: () => _openGroupSelection(context, followed),
+        child: Text(L10n.of(context).add_to_group),
+      ),
+      if (followed)
+        MenuItemButton(
+          onPressed: () => model.toggleInFeed(user, inFeed),
+          child: Text(inFeed ? L10n.of(context).hide_from_main_feed : L10n.of(context).show_in_main_feed),
+        ),
+    ];
+  }
+
+  Widget _buildAnchor(MenuController controller, bool followed, bool inFeed) {
+    void toggleMenu() => controller.isOpen ? controller.close() : controller.open();
+
+    var anchorChild = child;
+    if (anchorChild != null) {
+      return InkResponse(onTap: toggleMenu, child: anchorChild);
+    }
+
+    var icon = followed
+        ? (inFeed ? Icon(Icons.person_remove, color: color) : Icon(Icons.visibility_off))
+        : Icon(Icons.person_add, color: color);
+
+    return IconButton(icon: icon, onPressed: toggleMenu);
+  }
+
+  Future<void> _openGroupSelection(BuildContext context, bool followed) async {
+    var groups = await context.read<GroupsModel>().listGroupsForUser(user.id);
+    if (context.mounted) {
+      showDialog(
+          context: context,
+          builder: (_) => FollowButtonSelectGroupDialog(
+              user: user, followed: followed, groupsForUser: groups, skipFeedKey: skipFeedKey));
+    }
+  }
+}
+
+/// A "+" corner badge shown on the avatar of an author the user is not subscribed to.
+/// Tapping it opens the same menu as [FollowButton].
+class SubscribeAvatarBadge extends StatelessWidget {
+  static const _size = 20.0;
+  static const _ringWidth = 2.0;
+  static const _hitSize = 24.0;
+
+  final User user;
+
+  /// The colour the badge's ring is cut out of, so it reads as part of the card it sits on.
+  final Color? cardColor;
+
+  const SubscribeAvatarBadge({super.key, required this.user, this.cardColor});
+
+  @override
+  Widget build(BuildContext context) {
+    return ScopedBuilder<SubscriptionsModel, List<Subscription>>(
+      store: context.read<SubscriptionsModel>(),
+      onState: (_, state) => isSubscribed(state, user.idStr)
+          ? const SizedBox.shrink()
+          : FollowButton(
+              user: UserSubscription.fromUser(user),
+              skipFeedKey: context.read<FeedRefreshController?>()?.feedKey,
+              child: _buildBadge(context)),
+    );
+  }
+
+  Widget _buildBadge(BuildContext context) {
+    var theme = Theme.of(context);
+
+    return Semantics(
+      button: true,
+      label: L10n.of(context).you_are_not_subscribed_to_this_author,
+      child: SizedBox(
+        width: _hitSize,
+        height: _hitSize,
+        child: Align(
+          alignment: Alignment.bottomRight,
+          child: Container(
+            width: _size,
+            height: _size,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: theme.colorScheme.primary,
+              border: Border.all(color: cardColor ?? theme.cardColor, width: _ringWidth),
+            ),
+            child: Icon(Icons.add, size: 12, color: theme.colorScheme.onPrimary),
+          ),
+        ),
+      ),
     );
   }
 }

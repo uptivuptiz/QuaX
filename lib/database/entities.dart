@@ -1,3 +1,4 @@
+import 'package:dart_twitter_api/twitter_api.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:quax/group/group_model.dart';
 import 'package:quax/user.dart';
@@ -163,14 +164,14 @@ class UserSubscription extends Subscription {
     );
   }
 
-  factory UserSubscription.fromUser(UserWithExtra user) {
+  factory UserSubscription.fromUser(User user) {
     return UserSubscription(
         id: user.idStr!,
-        screenName: user.screenName!,
-        name: user.name!,
+        screenName: user.screenName ?? '',
+        name: user.name ?? user.screenName ?? '',
         profileImageUrlHttps: user.profileImageUrlHttps,
-        verified: user.verified!,
-        createdAt: user.createdAt!,
+        verified: user.verified ?? false,
+        createdAt: user.createdAt ?? DateTime.now(),
         inFeed: true
     );
   }

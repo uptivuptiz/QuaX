@@ -26,7 +26,10 @@ class SubscriptionsModel extends Store<List<Subscription>> {
     _onSubscriptionsReloaded.remove(key);
   }
 
-  Future<void> reloadSubscriptions() async {
+  /// Reloads the subscription list. Every feed shell is told to rebuild, apart from the one
+  /// registered under [skipFeedKey], so a change made from inside a feed can update the stores
+  /// without remounting the feed being read.
+  Future<void> reloadSubscriptions({String? skipFeedKey}) async {
     log.info('Listing subscriptions');
 
     await execute(() async {
@@ -74,12 +77,15 @@ class SubscriptionsModel extends Store<List<Subscription>> {
         return newLst;
       }
     });
-    for(final callback in _onSubscriptionsReloaded.values) {
-      callback();
+    for (final entry in _onSubscriptionsReloaded.entries) {
+      if (entry.key != skipFeedKey) {
+        entry.value();
+      }
     }
   }
 
-  Future<void> _toggleSearchSubscribe(SearchSubscription user, bool currentlyFollowed) async {
+  Future<void> _toggleSearchSubscribe(
+      SearchSubscription user, bool currentlyFollowed, String? skipFeedKey) async {
     var database = await Repository.writable();
 
     await execute(() async {
@@ -95,13 +101,13 @@ class SubscriptionsModel extends Store<List<Subscription>> {
       }
 
       // TODO: This is hardcore, but we need to resort the list and this is the easiest way
-      await reloadSubscriptions();
+      await reloadSubscriptions(skipFeedKey: skipFeedKey);
 
       return state;
     });
   }
 
-  Future<void> _toggleUserSubscribe(UserSubscription user, bool currentlyFollowed) async {
+  Future<void> _toggleUserSubscribe(UserSubscription user, bool currentlyFollowed, String? skipFeedKey) async {
     var database = await Repository.writable();
 
     await execute(() async {
@@ -121,22 +127,22 @@ class SubscriptionsModel extends Store<List<Subscription>> {
       }
 
       // TODO: This is hardcore, but we need to resort the list and this is the easiest way
-      await reloadSubscriptions();
+      await reloadSubscriptions(skipFeedKey: skipFeedKey);
 
       return state;
     });
 
-    await groupModel.reloadGroups();
+    await groupModel.reloadGroups(skipFeedKey: skipFeedKey);
   }
 
-  Future<void> toggleSubscribe(Subscription user, bool currentlyFollowed) async {
+  Future<void> toggleSubscribe(Subscription user, bool currentlyFollowed, {String? skipFeedKey}) async {
     if (user is UserSubscription) {
-      await _toggleUserSubscribe(user, currentlyFollowed);
+      await _toggleUserSubscribe(user, currentlyFollowed, skipFeedKey);
     } else if (user is SearchSubscription) {
-      await _toggleSearchSubscribe(user, currentlyFollowed);
+      await _toggleSearchSubscribe(user, currentlyFollowed, skipFeedKey);
     }
 
-    await groupModel.reloadGroups();
+    await groupModel.reloadGroups(skipFeedKey: skipFeedKey);
   }
 
   Future<void> toggleInFeed(Subscription user, bool wasInFeed) async {

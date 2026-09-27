@@ -34,6 +34,11 @@ class SettingsPostsFragment extends StatelessWidget {
             subtitle: Text(L10n.of(context).activate_non_confirmation_bias_mode_description),
           ),
           PrefSwitch(
+            title: Text(L10n.of(context).show_not_followed_indicator),
+            subtitle: Text(L10n.of(context).show_not_followed_indicator_description),
+            pref: optionShowNotFollowedIndicator,
+          ),
+          PrefSwitch(
             title: Text(L10n.of(context).disable_warnings_for_unrelated_posts_in_feed),
             subtitle: Text(L10n.of(context).disable_warnings_for_unrelated_posts_in_feed_description),
             pref: optionDisableWarningsForUnrelatedPostsInFeed,
