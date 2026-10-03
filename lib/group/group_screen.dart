@@ -1,6 +1,7 @@
 import 'package:crypto/crypto.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_triple/flutter_triple.dart';
+import 'package:quax/constants.dart';
 import 'package:quax/client/client.dart';
 import 'package:quax/database/entities.dart';
 import 'package:quax/database/repository.dart';
@@ -122,7 +123,7 @@ class _SubscriptionGroupScreenContentState extends State<SubscriptionGroupScreen
         final filteredUsers = group.id == '-1' ? group.subscriptions.where((elm) => elm.inFeed) : group.subscriptions;
         final users = filteredUsers.sorted((a, b) => a.createdAt.compareTo(b.createdAt)).toList();
 
-        var chunks = partition(users, 16)
+        var chunks = partition(users, subscriptionsPerSearch)
             .map((e) => SubscriptionGroupFeedChunk(e, group.includeReplies, group.includeRetweets))
             .toList();
 
